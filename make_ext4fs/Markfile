@@ -1,0 +1,21 @@
+CC=gcc
+CFLAGS=-m32 -DHOST -DANDROID -D__APPLE__ -D__MACH__ -I../include -I../libselinux/include 
+LDFLAGS= ./lib/libselinux.a ./lib/liblz4-host.a ./lib/libsparse_host.a ./lib/libext4_utils_host.a
+LIBS=-lm -lz
+SRCS= make_ext4fs_main_off.c
+
+.PHONY: make_ext4fs
+
+make_ext4fs:
+	@echo "Building make_ext4fs..."
+	@echo "==========================================="
+	@echo "CFLAGS = "$(CFLAGS)
+	@echo "LDFLAGS = "$(LDFLAGS)
+	@echo "LIBS = "$(LIBS)
+	@echo "==========================================="
+	@$(CC) -o $@ $(SRCS) $(CFLAGS) $(LDFLAGS) $(LIBS)
+
+clean:
+	@echo "Cleaning..."
+	@rm -rf *.o
+	@rm -rf make_ext4fs
