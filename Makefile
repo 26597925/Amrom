@@ -5,7 +5,7 @@ CFLAGS=-m32 -DHOST -DANDROID -D__APPLE__ -D__MACH__ -I./include -I./libselinux/i
 # 链接静态库
 LDFLAGS= make_ext4fs/lib/libselinux.a make_ext4fs/lib/liblz4-host.a make_ext4fs/lib/libsparse_host.a make_ext4fs/lib/libext4_utils_host.a
 # 调用系统库
-LIBS=-lm -lz
+LIBS=-lm -lz -lsqlite3
 # 源码文件
 SRCS= amrom.c \
 	simg2img/simg2img.c \
