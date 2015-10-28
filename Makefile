@@ -1,11 +1,17 @@
 # 编译器使用gcc
 CC=gcc
 # -m32 是编译32位程序
-CFLAGS=-m32 -DHOST -DANDROID -D__APPLE__ -D__MACH__ -I./include -I./libselinux/include 
+CFLAGS=-m32 -DHOST -DANDROID -I./include -I./libselinux/include 
 # 链接静态库
-LDFLAGS= make_ext4fs/lib/libselinux.a make_ext4fs/lib/liblz4-host.a make_ext4fs/lib/libsparse_host.a make_ext4fs/lib/libext4_utils_host.a
+ifeq ($(shell uname), Linux)
+	CFLAGS+=-D__linux__
+	LDFLAGS=-L./make_ext4fs/lib/linux
+else
+	CFLAGS+=-D__APPLE__ -D__MACH__
+	LDFLAGS=-L./make_ext4fs/lib/osx
+endif
 # 调用系统库
-LIBS=-lm -lz -lsqlite3
+LIBS=-lm -lz -lsqlite3 -lext4_utils_host -llz4-host -lselinux -lsparse_host
 # 源码文件
 SRCS= amrom.c \
 	simg2img/simg2img.c \

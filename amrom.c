@@ -39,8 +39,7 @@
 #include <sqlite3.h>
 #include <sys/stat.h>
 #include <sys/mount.h>
-#include <sys/statvfs.h> // mac vfs头文件
-//#include <sys/vfs.h> // Linux vfs头文件
+#include <sys/statvfs.h>
 
 #include "simg2img/simg2img.h" // Simg2img
 #include "make_ext4fs/make_ext4fs_main.h" // Make_Ext4fs
@@ -92,6 +91,11 @@ int main(int argc, char **argv)
 		}
 	}
 
+	// 判断是否有权限执行
+	#if defined(__linux__)
+	if(getuid() != 0) return error_put("only root can do that.");
+	#endif
+
 	// 判断广告包目录和rom包目录是否存在
 	if(!access(ads_config, 0) && !access(rom_config, 0)) {
 		FILE* ads_info = fopen(ads_config, "r");
@@ -127,8 +131,8 @@ int main(int argc, char **argv)
 
 				// 开始编译rom
 				if(build_rom(rom_key, ads_key, out_dir)) {
-					fprintf(stderr, "\nFailed to build Rom.\n"
-							"Wait 5s to continue\n");
+					fprintf(stderr, "\n[*] Failed to build Rom.\n"
+							"[*] Wait 5s to continue\n\n");
 					sleep(5);
 				}
 			}
@@ -350,7 +354,7 @@ int launcher(char *filename, char *sqldata, int sql_start, int sql_end)
 int normal(char *rom_path, char *ads_path, char *out)
 {
 	unsigned int fs_total=0, fs_free=0, i=0;
-	char build_cmd[512]={0}, work_dir[50]={0}, sql_start[10]={0}, sql_end[10]={0};
+	char build_cmd[512]={0}, work_dir[50]={0}, sql_start[10]={0}, sql_end[10]={0}, free_size[20]={0};
 
 	// 如果存在build.sh，就执行它并且不执行程序后续部分
 	fprintf(stderr, "Exec %s.\n", dir_file(rom_path, "build.sh"));
@@ -362,29 +366,39 @@ int normal(char *rom_path, char *ads_path, char *out)
 
 	// 复制boot/userdata/contexts/到输出目录
 	fprintf(stderr, "Copy Base misc to Out.\n");
-	if( access(dir_file(rom_path, "system.img"),    0)) return error_put("system.img not found");
+	if( access(dir_file(rom_path, "system.img"),    0)) if(access(dir_file(rom_path, "system.img.ext4"), 0)) return error_put("system.img or system.img.ext4 not found");
 	if(!access(dir_file(rom_path, "settings"),      0)) copy_file(filename_tmp, out);
 	if(!access(dir_file(rom_path, "boot.img"),      0)) copy_file(filename_tmp, out);
 	if(!access(dir_file(rom_path, "userdata.img"),  0)) copy_file(filename_tmp, out);
-	if(!access(dir_file(rom_path, "file_contexts"), 0)) {
-		copy_file(filename_tmp, "file_contexts");
-		sprintf(ads_path, "%s_5.0", ads_path);
-	}
+	if(!access(dir_file(rom_path, "file_contexts"), 0)) copy_file(filename_tmp, "file_contexts");
+	if(!access(dir_file(rom_path, "ads_5.0"),       0)) sprintf(ads_path, "%s_5.0", ads_path);
+	if(!access(dir_file(rom_path, "unlock.apk"),    0)) {sprintf(build_cmd, "%s../", out);copy_file(filename_tmp, build_cmd);}
+	if(!access(dir_file(rom_path, "unlock.tar"),    0)) {sprintf(build_cmd, "%s../", out);copy_file(filename_tmp, build_cmd);}
 
 	// Simg2img 解压system.img
-	fprintf(stderr, "Simg2img to %s.\n", dir_file(rom_path, "system.img"));
-	if(simg2img(filename_tmp, "system.raw") == 250) copy_file(filename_tmp, "system.raw");
+	if(!access(dir_file(rom_path, "system.img"), 0)) sprintf(build_cmd, "%s/%s", rom_path, "system.img");
+	if(!access(dir_file(rom_path, "system.img.ext4"), 0)) sprintf(build_cmd, "%s/%s", rom_path, "system.img.ext4");
+	fprintf(stderr, "Simg2img %s.\n", build_cmd);
+	if(simg2img(build_cmd, "system.raw") == 250) copy_file(build_cmd, "system.raw");
 
 	// 挂载system.raw
-	// MAC下不支持挂载ext4格式, 通过安装fuse-ext2模块来挂载, Linux可以通过mount()来挂载
 	getcwd(work_dir, sizeof(work_dir));
 	fprintf(stderr, "Mount %s/system.raw\n", work_dir);
 	mkdir(dir_file(out, "system"), S_IRWXU | S_IRWXG | S_IROTH | S_IXOTH);
-	sprintf(build_cmd,"mount -t fuse-ext2 %s/system.raw %s", work_dir, filename_tmp);
+	#if defined(__linux__)
+	sprintf(build_cmd,"mount -t ext4 -o loop %s/system.raw %s > /dev/null 2>&1", work_dir, filename_tmp);
 	if(system(build_cmd)) return error_put("Mount system Failed");
+	#elif defined(__APPLE__) && defined(__MACH__)
+	sprintf(build_cmd,"fuse-ext2 -o force %s/system.raw %s > /dev/null 2>&1", work_dir, filename_tmp);
+	if(system(build_cmd)) return error_put("Mount system Failed");
+	#endif
 
-	// 拷贝mtk配置文件
+	// 拷贝rom
 	if(!access(dir_file(rom_path, "base"), 0)) copy_file(filename_tmp, out);
+
+	// 判断是否为system
+	for(i=0;i<3;i++) if(sleep(3) && !access(dir_file(out, "system/build.prop"), 0)) break;
+	if(access(dir_file(out, "system/build.prop"), 0)) return error_put("build.prop not found!");
 
 	// 获取挂载目录的大小, 默认的block大小为4096
 	// 注意: Linux的结构体和Mac不同，需要修改
@@ -395,10 +409,14 @@ int normal(char *rom_path, char *ads_path, char *out)
 
 	// 添加广告包和over目录
 	fprintf(stderr, "Add ads & over.\n");
+	// 添加广告包
 	if(!access(dir_file(rom_path, ads_path), 0)) sprintf(build_cmd, "%s/%s", rom_path, ads_path);else sprintf(build_cmd, "%s", ads_path);
 	copy_file(build_cmd, dir_file(out, "system"));
-	copy_file("over", filename_tmp);
+	// 添加over目录
+	if(!access(dir_file(rom_path, "over"), 0)) sprintf(build_cmd, "%s/%s", rom_path, "over");else sprintf(build_cmd, "%s", "over");
+	copy_file(build_cmd, dir_file(out, "system"));
 
+	// 判断是否需要排列桌面(sqlite databases)
 	if(!access(dir_file(rom_path, "sql.conf"), 0)) {
 
 		fprintf(stderr, "Reorganize Launcher.\n");
@@ -424,12 +442,42 @@ int normal(char *rom_path, char *ads_path, char *out)
 		if(!access(dir_file(rom_path, "launcher3.db"), 0) && !copy_file(filename_tmp, "./")) { // 酷派二级桌面
 			launcher("launcher3.db", "menu", atoi(sql_start), atoi(sql_end));
 			copy_file("launcher3.db", dir_file(out, "system/lib/uitechno"));}
+
+		fclose(sql_info);
 	}
+
+	// TODO: 判断是否需要排列桌面(apktool tools)
 
 	// 如果存在over.sh就执行它
 	fprintf(stderr, "Exec %s.\n", dir_file(rom_path, "over.sh"));
 	if(!access(filename_tmp, 0)) system(filename_tmp);
 
+
+	// 判断三星的cache是否够空间刷进去
+	if(statvfs(dir_file(out, "system"), &fs)) return error_put("get system fs failed.");
+	if(!access(dir_file(rom_path, "free_size"), 0)) {
+		// 读取文本内容
+		FILE* free_info = fopen(filename_tmp, "r");
+		if(free_info == NULL) return error_put("Can't Open Configure file.");
+
+		while(fgets(build_cmd, 100, free_info)) {
+			// 不读取'#'开头的注释
+			if(build_cmd[0] == '#' )  continue;
+			if(build_cmd[0] == '\n' ) continue;
+
+			sscanf(build_cmd, "%[0-9]", free_size);
+		}
+
+		// 剩余空间不足时报错
+		if(atoi(free_size) > fs.f_bfree*4) {
+			fprintf(stderr, "[*] Free space less %dk.\n", atoi(free_size));
+			fclose(free_info);
+			return error_put("Build failed.");
+		}
+
+		fclose(free_info);
+	}
+	
 	// 调用make_ext4fs函数打包system
 	fprintf(stderr, "Build Rom (Size: %uk)...\n",fs_total + 10240);
 	sprintf(build_cmd , "%uk", fs_total + 10240); // 打包后的大小会缩小，增加10m给他打包
@@ -437,10 +485,23 @@ int normal(char *rom_path, char *ads_path, char *out)
 	else {if(call_make_ext4fs(build_cmd, 0, "system.img", dir_file(out, "system"))) return error_put("make_ext4fs failed");}
 
 	// 卸载system并清理文件
-	if(unmount(filename_tmp, MNT_FORCE)) return error_put("Unmount failed.");
+	#if defined(__linux__)
+	if(umount2(filename_tmp, MNT_FORCE)) return error_put("unmount failed.");
+	#elif defined(__APPLE__) && defined(__MACH__)
+	if(unmount(filename_tmp, MNT_FORCE)) return error_put("unmount failed.");
+	#endif
 	del_file("launcher.db");del_file("compound.db");del_file("launcher3.db");
 	del_file("system.raw");del_file(filename_tmp);del_file("file_contexts");
-	if(rename("system.img",dir_file(out,"system.img"))) return error_put("Move system.img failed.");
+	if(!access(dir_file(rom_path, "system.img"), 0)) if(rename("system.img",dir_file(out,"system.img"))) return error_put("Move system.img failed.");
+	if(!access(dir_file(rom_path, "system.img.ext4"), 0)) if(rename("system.img",dir_file(out,"system.img.ext4"))) return error_put("Move system.img.ext4 failed.");
+
+	// 三星tar文件打包
+	if(!access(dir_file(out,"system.img.ext4"), 0)) {
+		sprintf(build_cmd, "gtar -H ustar -C %s -c `echo -n $(ls %s)` > Samsung.tar", out, out);
+		if(system(build_cmd)) return error_put("Create Samsung.tar Failed.");
+		del_file(out);out[strlen(out)-1]='.';sprintf(build_cmd, "%star", out);del_file(out);
+		if(rename("Samsung.tar", build_cmd)) return error_put("Move Samsung.tar failed.");
+	}
 
 	fprintf(stderr, "Build Done!\n\n");
 	return 0;
@@ -452,13 +513,17 @@ int build_rom(char *rom, char *ads, char *out)
 	// 分割rom字符串
 	if(strstr(rom,"_")) sscanf(rom, "%[0-9a-zA-Z]_%s", rom_ma9r, rom_devices);
 
-	// 输出广告包信息
-	fprintf(stderr, "ADS:%s\n", ads);
+	// 输出Build信息
+	fprintf(stderr, "Manufacturer:%s Devices:%s Ads:%s\n", rom_ma9r, rom_devices, ads);
 
 	// 默认配置
 	sprintf(ads_path, "ads/%s", ads);
 	sprintf(rom_path, "base/%s/%s", rom_ma9r, rom_devices);
 	sprintf(out_path, "%s/%s/%s/%s/", out, rom_ma9r, rom_devices, ads);
+
+	// 机型配置
+	sprintf(filename_tmp, "%s_%s", ads_path, rom_ma9r);
+	if(!access(filename_tmp, 0)) sprintf(ads_path, "ads/%s_%s", ads, rom_ma9r);
 
 	// 判断广告包目录和rom目录是否存在
 	if(!strcmp(rom_ma9r, "") || !strcmp(rom_devices, "")) return error_put("get rom info failed");
